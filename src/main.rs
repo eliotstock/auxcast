@@ -23,7 +23,7 @@ const CHROMECAST_IP: &str = CHROMECAST_IP_C;
 const STREAM_IP: &str = "127.0.0.1";
 const STREAM_PORT: &str = "8080";
 
-async fn cast() -> Result<(), Error> {
+async fn cast(stream_port: u16) -> Result<(), Error> {
     let receiver = Receiver::new();
     receiver.connect(CHROMECAST_IP).await?;
 
@@ -31,30 +31,22 @@ async fn cast() -> Result<(), Error> {
     let media_controller = MediaController::new(app.clone(), receiver.clone())?;
 
     let metadata = MusicTrackMediaMetadataBuilder::default()
-        .title("Local stream")
+        .title("Live Audio Stream")
         .build()
         .unwrap();
 
-    // Was: http://stream.live.vc.bbcmedia.co.uk/bbc_world_service
+    // Create a streaming URL that points to our local server
+    let stream_url = format!("http://{}:{}/stream", STREAM_IP, stream_port);
+    
     let media_info = MediaInformationBuilder::default()
-        .content_id("http://127.0.0.1:8080")
+        .content_id(&stream_url)
         .stream_type(StreamType::Live)
-        .content_type("audio/*")
+        .content_type("audio/wav")
         .metadata(metadata)
         .build()
         .unwrap();
 
-    // let media_info_local_file = MediaInformationBuilder::default()
-    //     .content_id("file:///Users/e/Downloads/test.mp3")
-    //     .stream_type(StreamType::Live)
-    //     .content_type("audio/*")
-    //     .build()
-    //     .unwrap();
-
     media_controller.load(media_info).await?;
-    media_controller.start().await?;
-
-    // media_controller.stop().await?;
     Ok(())
 }
 
@@ -183,17 +175,17 @@ async fn cast() -> Result<(), Error> {
 //     Ok(())
 // }
 
-fn stream_from_input() -> Result<()> {
+fn stream_from_input() -> Result<u16> {
     println!("Starting audio streaming server...");
     
     // Set up UDP socket for streaming
-    // We'll bind to any available port, not 8080
     let socket_addr = SocketAddr::new(
         IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
         0 // Let the OS assign an available port
     );
     let socket = Arc::new(UdpSocket::bind(socket_addr)?);
-    println!("UDP socket bound to {}", socket.local_addr()?);
+    let bound_addr = socket.local_addr()?;
+    println!("UDP socket bound to {}", bound_addr);
 
     // Find the default audio host
     let host = cpal::default_host();
@@ -206,15 +198,15 @@ fn stream_from_input() -> Result<()> {
             println!("  {}. {}", device_index + 1, name);
         }
     }
-    
+
     // Wait for user input
-    println!("\nSelect a device: ");
+    println!("\nSelect a device (1-9): ");
     let mut input = [0u8; 1];
     io::stdin().read_exact(&mut input)?;
     let selection = input[0] as char;
     
     if !selection.is_digit(10) || selection == '0' {
-        return Err(anyhow::anyhow!("Invalid selection. Please choose a device ID above."));
+        return Err(anyhow::anyhow!("Invalid selection. Please choose a number between 1-9"));
     }
     
     let device_index = selection.to_digit(10).unwrap() as usize - 1;
@@ -249,10 +241,8 @@ fn stream_from_input() -> Result<()> {
     println!("Audio stream started");
     
     // Define the target - this is where we'll send the audio data
-    // Now we're sending to port 8080, not binding to it
     let target = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
     println!("Streaming audio to {}", target);
-    println!("Start the receiver with: nc -ul 127.0.0.1 8080 > audio_data.raw");
     
     // Set up a thread for network sending
     let socket_clone = Arc::clone(&socket);
@@ -288,8 +278,8 @@ fn stream_from_input() -> Result<()> {
             }
         }
     });
-
-    Ok(())
+    
+    Ok(bound_addr.port())
 }
 
 fn stream_setup<T>(
@@ -333,8 +323,8 @@ where
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    stream_from_input()?;
-    cast().await?;
+    let stream_port = stream_from_input()?;
+    cast(stream_port).await?;
     
     // Keep the main thread alive
     loop {
