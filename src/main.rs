@@ -15,8 +15,6 @@ use std::env;
 use async_stream;
 use bytes::Bytes;
 use std::convert::Infallible;
-use tokio_stream;
-use tokio::sync::broadcast;
 
 const CHROMECAST_IP: &str = "192.168.86.238";
 const AUDIO_DEVICE_ID: usize = 0;
