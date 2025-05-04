@@ -17,7 +17,6 @@ use bytes::Bytes;
 use std::convert::Infallible;
 
 const CHROMECAST_IP: &str = "192.168.86.238";
-const AUDIO_DEVICE_ID: usize = 0;
 const HTTP_PORT: u16 = 8080;
 const OUTPUT_FILE: &str = "output.wav";
 
@@ -75,10 +74,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let host = cpal::default_host();
     let devices = host.input_devices()?;
     
-    // Try to get the audio device with above ID
-    let device = devices
+    // List all available input devices
+    println!("\nAvailable audio input devices:");
+    for (id, device) in devices.enumerate() {
+        println!("{}: {}", id, device.name()?);
+    }
+    
+    // Get user input for device selection
+    println!("\nEnter the ID of the audio device to use:");
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let selected_device_id: usize = input.trim().parse()?;
+    
+    // Try to get the audio device with selected ID
+    let device = host.input_devices()?
         .enumerate()
-        .filter(|(id, _)| *id == AUDIO_DEVICE_ID)
+        .filter(|(id, _)| *id == selected_device_id)
         .map(|(_, device)| device)
         .next()
         .ok_or("Could not find audio device with given ID")?;
@@ -88,6 +99,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Get a supported configuration for the audio input
     let config = device.default_input_config()?;
     println!("Default input config: {:?}", config);
+    let num_channels = config.channels() as usize;
 
     if debug_mode {
         // Debug mode: Write to WAV file
@@ -102,11 +114,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 // Convert audio data to bytes and store in buffer
                 let mut bytes = Vec::with_capacity(data.len() * 2);
                 
-                for chunk in data.chunks(10) { // Process all 10 channels at once
-                    if chunk.len() >= 10 {
-                        // Use channels 1 and 2 (indices 0 and 1) for stereo output
-                        let left_sample = (chunk[0] * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
-                        let right_sample = (chunk[1] * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                // Process each sample pair (left and right) directly
+                for samples in data.chunks(num_channels) {
+                    if samples.len() >= 2 {
+                        let left_sample = (samples[0] * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                        let right_sample = (samples[1] * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
                         
                         bytes.extend_from_slice(&left_sample.to_le_bytes());
                         bytes.extend_from_slice(&right_sample.to_le_bytes());
@@ -148,11 +160,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 // Convert audio data to bytes and send through channel
                 let mut bytes = Vec::with_capacity(data.len() * 2);
                 
-                for chunk in data.chunks(10) { // Process all 10 channels at once
-                    if chunk.len() >= 10 {
-                        // Use channels 1 and 2 (indices 0 and 1) for stereo output
-                        let left_sample = (chunk[0] * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
-                        let right_sample = (chunk[1] * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                // Process each sample pair (left and right) directly
+                for samples in data.chunks(num_channels) {
+                    if samples.len() >= 2 {
+                        let left_sample = (samples[0] * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                        let right_sample = (samples[1] * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
                         
                         bytes.extend_from_slice(&left_sample.to_le_bytes());
                         bytes.extend_from_slice(&right_sample.to_le_bytes());
@@ -201,7 +213,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             }
                         };
                         if !data.is_empty() {
-                            println!("Serving audio data: {} bytes", data.len());
+                            // println!("Serving audio data: {} bytes", data.len());
                             yield Ok::<Bytes, Infallible>(data.into());
                         }
                         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
@@ -249,7 +261,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // Start a task to update the audio data
         let audio_task = tokio::spawn(async move {
             while let Some(data_to_send) = rx.recv().await {
-                println!("Received audio data: {} bytes", data_to_send.len());
+                // println!("Received audio data: {} bytes", data_to_send.len());
                 let mut buffer = audio_buffer.lock().unwrap();
                 buffer.extend_from_slice(&data_to_send);
             }
