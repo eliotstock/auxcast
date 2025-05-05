@@ -14,6 +14,7 @@ use async_stream;
 use bytes::Bytes;
 use std::convert::Infallible;
 use auxcast::{create_wav_header, write_wav_file};
+use auxcast::discover_devices;
 use dialoguer::{theme::ColorfulTheme, Select};
 use local_ip_address::local_ip;
 use anyhow::Result;
@@ -29,7 +30,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
     let debug_mode = args.iter().any(|arg| arg == "--debug" || arg == "-d");
 
-    // List all available input devices
+    // List all available audio input devices
     let host = cpal::default_host();
     let devices: Vec<_> = host.input_devices()?.collect();
     
@@ -56,7 +57,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .get(selection)
         .ok_or_else(|| anyhow::anyhow!("Failed to get selected device"))?;
 
-    println!("Selected device: {}", selected_device.name()?);
+    println!("Selected audio input device: {}", selected_device.name()?);
 
     // Get a supported configuration for the audio input
     let config = selected_device.default_input_config()?;
@@ -201,6 +202,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
         });
         
         println!("HTTP server running at http://{}:{}", local_ip, HTTP_PORT);
+
+        let cast_devices = discover_devices().await?;
+
+         // Print results
+        if cast_devices.is_empty() {
+            println!("No Chromecast devices found");
+        } else {
+            println!("\nFound {} Chromecast device(s):", cast_devices.len());
+            for device in cast_devices {
+                println!("\n{}: {} ({})", 
+                    if device.is_group { "Speaker Group" } else { "Device" },
+                    device.name, device.ip);
+                if debug_mode {
+                    println!("Records:");
+                    for record in device.records {
+                        println!("  {}", record);
+                    }
+                }
+            }
+        }
         
         // Connect to the Chromecast device
         println!("Connecting to Chromecast at {}", CHROMECAST_IP);
