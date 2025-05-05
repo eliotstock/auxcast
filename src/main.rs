@@ -14,6 +14,9 @@ use async_stream;
 use bytes::Bytes;
 use std::convert::Infallible;
 use auxcast::{create_wav_header, write_wav_file};
+use dialoguer::{theme::ColorfulTheme, Select};
+use local_ip_address::local_ip;
+use anyhow::Result;
 
 const CHROMECAST_IP: &str = "192.168.86.29";
 const HTTP_PORT: u16 = 8080;
@@ -21,37 +24,42 @@ const OUTPUT_FILE: &str = "output.wav";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    println!("Hit Ctrl-C to stop casting");
+
     let args: Vec<String> = env::args().collect();
     let debug_mode = args.iter().any(|arg| arg == "--debug" || arg == "-d");
 
-    // Set up audio capture from specified device
-    let host = cpal::default_host();
-    let devices = host.input_devices()?;
-    
     // List all available input devices
-    println!("\nAvailable audio input devices:");
-    for (id, device) in devices.enumerate() {
-        println!("{}: {}", id, device.name()?);
+    let host = cpal::default_host();
+    let devices: Vec<_> = host.input_devices()?.collect();
+    
+    // Collect device names into a vector
+    let device_names: Vec<String> = devices
+        .iter()
+        .map(|device| device.name().unwrap_or_else(|_| "Unknown Device".to_string()))
+        .collect();
+
+    if device_names.is_empty() {
+        println!("No audio input devices found!");
+        return Ok(());
     }
-    
-    // Get user input for device selection
-    println!("\nEnter the ID of the audio device to use:");
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    let selected_device_id: usize = input.trim().parse()?;
-    
-    // Try to get the audio device with selected ID
-    let device = host.input_devices()?
-        .enumerate()
-        .filter(|(id, _)| *id == selected_device_id)
-        .map(|(_, device)| device)
-        .next()
-        .ok_or("Could not find audio device with given ID")?;
-    
-    println!("Using input device: {}", device.name()?);
-    
+
+    // Create an interactive selection prompt
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Select an audio input device")
+        .items(&device_names)
+        .default(0)
+        .interact()?;
+
+    // Get the selected device
+    let selected_device = devices
+        .get(selection)
+        .ok_or_else(|| anyhow::anyhow!("Failed to get selected device"))?;
+
+    println!("Selected device: {}", selected_device.name()?);
+
     // Get a supported configuration for the audio input
-    let config = device.default_input_config()?;
+    let config = selected_device.default_input_config()?;
     println!("Default input config: {:?}", config);
     let num_channels = config.channels() as usize;
 
@@ -62,7 +70,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let sample_rate = config.sample_rate().0;
         
         // Build the input stream
-        let input_stream = device.build_input_stream(
+        let input_stream = selected_device.build_input_stream(
             &config.config(),
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
                 // Convert audio data to bytes and store in buffer
@@ -108,7 +116,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(100);
         
         // Build the input stream
-        let input_stream = device.build_input_stream(
+        let input_stream = selected_device.build_input_stream(
             &config.config(),
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
                 // Convert audio data to bytes and send through channel
@@ -134,7 +142,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )?;
         
         // Start the HTTP server
-        let local_ip = local_ip_address::local_ip()?;
+        let local_ip = local_ip()?;
         let server_addr = SocketAddr::new(local_ip, HTTP_PORT);
         let audio_buffer = Arc::new(Mutex::new(Vec::new()));
         let audio_buffer_http = audio_buffer.clone();

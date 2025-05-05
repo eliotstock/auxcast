@@ -18,3 +18,4 @@ tokio = { version = "~1.43.0", features = ["full"] }
 ctrlc = "3.4"
 async-stream = "0.3"
 tokio-stream = "0.1"
+dialoguer = "0.11"
