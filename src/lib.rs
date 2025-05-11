@@ -4,6 +4,10 @@ use std::io::{BufWriter, Write};
 use futures_util::{pin_mut, stream::StreamExt};
 use mdns::{Record, RecordKind};
 use std::{net::IpAddr, time::Duration, collections::HashMap};
+use std::sync::{Arc, Mutex};
+use cpal::{self, traits::{DeviceTrait, StreamTrait}};
+use std::i16;
+use ctrlc;
 
 pub fn create_wav_header(sample_rate: u32, channels: u16, bits_per_sample: u16, data_size: u32) -> Vec<u8> {
     let mut header = Vec::new();
@@ -69,8 +73,59 @@ fn to_ip_addr(record: &Record) -> Option<IpAddr> {
     }
 }
 
+pub fn record_audio_to_file(
+    device: &cpal::Device,
+    config: cpal::SupportedStreamConfig,
+    num_channels: usize,
+    output_file: &str,
+) -> Result<(), Box<dyn Error>> {
+    let audio_data = Arc::new(Mutex::new(Vec::new()));
+    let audio_data_clone = audio_data.clone();
+    let sample_rate = config.sample_rate().0;
+    let output_file = output_file.to_string();
+    
+    let input_stream = device.build_input_stream(
+        &config.config(),
+        move |data: &[f32], _: &cpal::InputCallbackInfo| {
+            let mut bytes = Vec::with_capacity(data.len() * 2);
+            
+            for samples in data.chunks(num_channels) {
+                if samples.len() >= 2 {
+                    let left_sample = (samples[0] * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                    let right_sample = (samples[1] * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                    
+                    bytes.extend_from_slice(&left_sample.to_le_bytes());
+                    bytes.extend_from_slice(&right_sample.to_le_bytes());
+                }
+            }
+            
+            let mut audio_data = audio_data_clone.lock().unwrap();
+            audio_data.extend_from_slice(&bytes);
+        },
+        |err| eprintln!("Error in input stream: {}", err),
+        None,
+    )?;
+    
+    input_stream.play()?;
+    println!("Started audio input stream");
+    println!("Recording audio to {}. Press Ctrl+C to stop.", output_file);
+    
+    ctrlc::set_handler(move || {
+        println!("Stopping recording...");
+        let audio_data = audio_data.lock().unwrap();
+        if let Err(e) = write_wav_file(&audio_data, sample_rate, &output_file) {
+            eprintln!("Error writing WAV file: {}", e);
+        }
+        std::process::exit(0);
+    })?;
+    
+    std::thread::park();
+    Ok(())
+}
+
 /// Discovers Chromecast devices and speaker groups on the network.
-/// Returns a list of unique devices and groups.
+/// Returns a list of unique devices and groups, with speaker groups first,
+/// each sorted alphabetically by name.
 pub async fn discover_devices() -> Result<Vec<ChromecastDevice>, Box<dyn Error>> {
     // Do a single discovery scan
     let stream = mdns::discover::all(SERVICE_NAME, Duration::from_secs(5))?.listen();
@@ -139,5 +194,25 @@ pub async fn discover_devices() -> Result<Vec<ChromecastDevice>, Box<dyn Error>>
         }
     }
 
-    Ok(devices.into_values().collect())
+    // Split into groups and devices, sort each, then recombine
+    let all_devices: Vec<_> = devices.into_values().collect();
+    let mut groups: Vec<_> = all_devices.iter()
+        .filter(|d| d.is_group)
+        .cloned()
+        .collect();
+    let mut devices: Vec<_> = all_devices.iter()
+        .filter(|d| !d.is_group)
+        .cloned()
+        .collect();
+
+    // Sort each list by name
+    groups.sort_by(|a, b| a.name.cmp(&b.name));
+    devices.sort_by(|a, b| a.name.cmp(&b.name));
+
+    // Combine with groups first
+    let mut result = Vec::new();
+    result.extend(groups);
+    result.extend(devices);
+
+    Ok(result)
 }

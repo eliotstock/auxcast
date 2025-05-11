@@ -13,7 +13,7 @@ use std::env;
 use async_stream;
 use bytes::Bytes;
 use std::convert::Infallible;
-use auxcast::{create_wav_header, write_wav_file};
+use auxcast::create_wav_header;
 use auxcast::discover_devices;
 use dialoguer::{theme::ColorfulTheme, Select};
 use local_ip_address::local_ip;
@@ -57,61 +57,35 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .get(selection)
         .ok_or_else(|| anyhow::anyhow!("Failed to get selected device"))?;
 
-    println!("Selected audio input device: {}", selected_device.name()?);
-
     // Get a supported configuration for the audio input
     let config = selected_device.default_input_config()?;
-    println!("Default input config: {:?}", config);
+    // println!("Default input config: {:?}", config);
     let num_channels = config.channels() as usize;
 
-    if debug_mode {
-        // Debug mode: Write to WAV file
-        let audio_data = Arc::new(Mutex::new(Vec::new()));
-        let audio_data_clone = audio_data.clone();
-        let sample_rate = config.sample_rate().0;
-        
-        // Build the input stream
-        let input_stream = selected_device.build_input_stream(
-            &config.config(),
-            move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                // Convert audio data to bytes and store in buffer
-                let mut bytes = Vec::with_capacity(data.len() * 2);
-                
-                // Process each sample pair (left and right) directly
-                for samples in data.chunks(num_channels) {
-                    if samples.len() >= 2 {
-                        let left_sample = (samples[0] * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
-                        let right_sample = (samples[1] * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
-                        
-                        bytes.extend_from_slice(&left_sample.to_le_bytes());
-                        bytes.extend_from_slice(&right_sample.to_le_bytes());
-                    }
+    println!("Using audio input device: {}, with {} channel(s)", selected_device.name()?, num_channels);
+
+    let cast_devices = discover_devices().await?;
+
+    // Print results
+    if cast_devices.is_empty() {
+        println!("No Chromecast devices found");
+    } else {
+        println!("\nFound {} Chromecast device(s):", cast_devices.len());
+        for device in cast_devices {
+            println!("\n{}: {} ({})", 
+                if device.is_group { "Speaker Group" } else { "Device" },
+                device.name, device.ip);
+            if debug_mode {
+                println!("Records:");
+                for record in device.records {
+                    println!("  {}", record);
                 }
-                
-                let mut audio_data = audio_data_clone.lock().unwrap();
-                audio_data.extend_from_slice(&bytes);
-            },
-            |err| eprintln!("Error in input stream: {}", err),
-            None,
-        )?;
-        
-        // Start the audio input stream
-        input_stream.play()?;
-        println!("Started audio input stream");
-        println!("Recording audio to {}. Press Ctrl+C to stop.", OUTPUT_FILE);
-        
-        // Wait for Ctrl+C
-        ctrlc::set_handler(move || {
-            println!("Stopping recording...");
-            let audio_data = audio_data.lock().unwrap();
-            if let Err(e) = write_wav_file(&audio_data, sample_rate, OUTPUT_FILE) {
-                eprintln!("Error writing WAV file: {}", e);
             }
-            std::process::exit(0);
-        })?;
-        
-        // Keep the program running
-        std::thread::park();
+        }
+    }
+
+    if debug_mode {
+        auxcast::record_audio_to_file(&selected_device, config, num_channels, OUTPUT_FILE)?;
     } else {
         // Chromecast mode: Stream to Chromecast
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(100);
@@ -202,26 +176,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         });
         
         println!("HTTP server running at http://{}:{}", local_ip, HTTP_PORT);
-
-        let cast_devices = discover_devices().await?;
-
-         // Print results
-        if cast_devices.is_empty() {
-            println!("No Chromecast devices found");
-        } else {
-            println!("\nFound {} Chromecast device(s):", cast_devices.len());
-            for device in cast_devices {
-                println!("\n{}: {} ({})", 
-                    if device.is_group { "Speaker Group" } else { "Device" },
-                    device.name, device.ip);
-                if debug_mode {
-                    println!("Records:");
-                    for record in device.records {
-                        println!("  {}", record);
-                    }
-                }
-            }
-        }
         
         // Connect to the Chromecast device
         println!("Connecting to Chromecast at {}", CHROMECAST_IP);
