@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .iter()
         .map(|device| {
             format!("{}: {} {}", 
-                if device.is_group { "Speaker Group" } else { "Device" },
+                if device.is_group { "Speaker Group (NOT YET SUPPORTED)" } else { "Device" },
                 device.name,
                 if verbose_mode { format!("({})", device.ip) } else { "".to_string() })
         })
@@ -95,7 +95,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // Chromecast mode: Stream to Chromecast
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(100);
     
     // Build the input stream
