@@ -8,6 +8,10 @@ use std::sync::{Arc, Mutex};
 use cpal::{self, traits::{DeviceTrait, StreamTrait}};
 use std::i16;
 use ctrlc;
+use warp;
+use async_stream;
+use bytes;
+use local_ip_address;
 
 pub fn create_wav_header(sample_rate: u32, channels: u16, bits_per_sample: u16, data_size: u32) -> Vec<u8> {
     let mut header = Vec::new();
@@ -215,4 +219,97 @@ pub async fn discover_devices() -> Result<Vec<ChromecastDevice>, Box<dyn Error>>
     result.extend(devices);
 
     Ok(result)
+}
+
+pub fn build_input_stream_and_sender(
+    device: &cpal::Device,
+    config: &cpal::SupportedStreamConfig,
+    num_channels: usize,
+    tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+) -> Result<cpal::Stream, cpal::BuildStreamError> {
+    let input_stream = device.build_input_stream(
+        &config.config(),
+        move |data: &[f32], _: &cpal::InputCallbackInfo| {
+            let mut bytes = Vec::with_capacity(data.len() * 2);
+            for samples in data.chunks(num_channels) {
+                if samples.len() >= 2 {
+                    let left_sample = (samples[0] * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                    let right_sample = (samples[1] * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                    bytes.extend_from_slice(&left_sample.to_le_bytes());
+                    bytes.extend_from_slice(&right_sample.to_le_bytes());
+                }
+            }
+            if let Err(e) = tx.blocking_send(bytes) {
+                eprintln!("Error sending audio data: {}", e);
+            }
+        },
+        |err| eprintln!("Error in input stream: {}", err),
+        None,
+    )?;
+    Ok(input_stream)
+}
+
+pub fn spawn_audio_http_server(
+    audio_buffer: Arc<Mutex<Vec<u8>>>,
+    sample_rate: u32,
+    port: u16,
+) -> std::net::SocketAddr {
+    use warp::Filter;
+    use async_stream;
+    use bytes::Bytes;
+    use std::convert::Infallible;
+    use local_ip_address::local_ip;
+    use std::net::SocketAddr;
+
+    let audio_buffer_http = audio_buffer.clone();
+    let local_ip = local_ip().expect("Failed to get local IP address");
+    let server_addr = SocketAddr::new(local_ip, port);
+
+    let audio_route = warp::path("audio")
+        .map(move || {
+            let audio_buffer = audio_buffer_http.clone();
+            let stream = async_stream::stream! {
+                // Create WAV header
+                let header = crate::create_wav_header(
+                    sample_rate,
+                    2, // stereo
+                    16, // 16-bit
+                    0 // We'll update this later
+                );
+                // Send header first
+                yield Ok::<Bytes, Infallible>(header.into());
+                loop {
+                    let data = {
+                        let mut buffer = audio_buffer.lock().unwrap();
+                        if buffer.len() > 0 {
+                            let data = buffer.clone();
+                            buffer.clear();
+                            data
+                        } else {
+                            vec![]
+                        }
+                    };
+                    if !data.is_empty() {
+                        yield Ok::<Bytes, Infallible>(data.into());
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                }
+            };
+            let resp = warp::http::Response::builder()
+                .header("Content-Type", "audio/wav")
+                .header("Transfer-Encoding", "chunked")
+                .header("Connection", "keep-alive")
+                .header("Cache-Control", "no-cache")
+                .header("Access-Control-Allow-Origin", "*")
+                .body(warp::hyper::Body::wrap_stream(stream))
+                .unwrap();
+            warp::reply::Response::new(resp.into_body())
+        });
+
+    tokio::spawn(async move {
+        warp::serve(audio_route)
+            .run(server_addr)
+            .await;
+    });
+    server_addr
 }

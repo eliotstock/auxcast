@@ -5,15 +5,9 @@ use cast_sender::namespace::media::{
 use cast_sender::{AppId, MediaController, Receiver};
 use std::error::Error;
 use tokio::sync::mpsc;
-use warp::Filter;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::env;
-use async_stream;
-use bytes::Bytes;
-use std::convert::Infallible;
-use auxcast::create_wav_header;
 use auxcast::discover_devices;
 use dialoguer::{theme::ColorfulTheme, Select};
 use local_ip_address::local_ip;
@@ -26,6 +20,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
     let debug_mode = args.iter().any(|arg| arg == "--debug" || arg == "-d");
     let verbose_mode = args.iter().any(|arg| arg == "--verbose" || arg == "-v");
+
+    // Get local IP address
+    let local_ip = local_ip()?;
 
     // List all available audio input devices
     let host = cpal::default_host();
@@ -107,89 +104,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(100);
     
     // Build the input stream
-    let input_stream = selected_device.build_input_stream(
-        &config.config(),
-        move |data: &[f32], _: &cpal::InputCallbackInfo| {
-            // Convert audio data to bytes and send through channel
-            let mut bytes = Vec::with_capacity(data.len() * 2);
-            
-            // Process each sample pair (left and right) directly
-            for samples in data.chunks(num_channels) {
-                if samples.len() >= 2 {
-                    let left_sample = (samples[0] * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
-                    let right_sample = (samples[1] * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
-                    
-                    bytes.extend_from_slice(&left_sample.to_le_bytes());
-                    bytes.extend_from_slice(&right_sample.to_le_bytes());
-                }
-            }
-            
-            if let Err(e) = tx.blocking_send(bytes) {
-                eprintln!("Error sending audio data: {}", e);
-            }
-        },
-        |err| eprintln!("Error in input stream: {}", err),
-        None,
+    let input_stream = auxcast::build_input_stream_and_sender(
+        selected_device,
+        &config,
+        num_channels,
+        tx.clone(),
     )?;
     
-    // Start the HTTP server
-    let local_ip = local_ip()?;
-    let server_addr = SocketAddr::new(local_ip, HTTP_PORT);
+    // Prepare audio buffer and sample rate for HTTP server
     let audio_buffer = Arc::new(Mutex::new(Vec::new()));
-    let audio_buffer_http = audio_buffer.clone();
     let sample_rate = config.sample_rate().0;
-    
-    let audio_route = warp::path("audio")
-        .map(move || {
-            let audio_buffer = audio_buffer_http.clone();
-            let stream = async_stream::stream! {
-                // Create WAV header
-                let header = create_wav_header(
-                    sample_rate,
-                    2, // stereo
-                    16, // 16-bit
-                    0 // We'll update this later
-                );
-                
-                // Send header first
-                yield Ok::<Bytes, Infallible>(header.into());
-                
-                loop {
-                    let data = {
-                        let mut buffer = audio_buffer.lock().unwrap();
-                        if buffer.len() > 0 {
-                            let data = buffer.clone();
-                            buffer.clear();
-                            data
-                        } else {
-                            vec![]
-                        }
-                    };
-                    if !data.is_empty() {
-                        // println!("Serving audio data: {} bytes", data.len());
-                        yield Ok::<Bytes, Infallible>(data.into());
-                    }
-                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                }
-            };
-            
-            let resp = warp::http::Response::builder()
-                .header("Content-Type", "audio/wav")
-                .header("Transfer-Encoding", "chunked")
-                .header("Connection", "keep-alive")
-                .header("Cache-Control", "no-cache")
-                .header("Access-Control-Allow-Origin", "*")
-                .body(warp::hyper::Body::wrap_stream(stream))
-                .unwrap();
-            
-            warp::reply::Response::new(resp.into_body())
-        });
-    
-    tokio::spawn(async move {
-        warp::serve(audio_route)
-            .run(server_addr)
-            .await;
-    });
+
+    // Start the HTTP server
+    auxcast::spawn_audio_http_server(audio_buffer.clone(), sample_rate, HTTP_PORT);
     
     if verbose_mode {
         println!("HTTP server running at http://{}:{}", local_ip, HTTP_PORT);
@@ -204,10 +131,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("Connected");
     }
     
-    let app = receiver.launch_app(AppId::DefaultMediaReceiver).await?;
+    // Choose the correct app ID based on whether it's a group
+    let app_id = if selected_cast_device.is_group {
+        AppId::Custom("2872939A".to_string())
+    } else {
+        AppId::DefaultMediaReceiver
+    };
+    let app = receiver.launch_app(app_id).await?;
 
     if verbose_mode {
-        println!("Launched default media receiver app");
+        println!("Launched {} app", if selected_cast_device.is_group { "Cast Audio Receiver" } else { "Default Media Receiver" });
     }
     
     let media_controller = MediaController::new(app.clone(), receiver.clone())?;
@@ -257,6 +190,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Err(e) => eprintln!("Error sending media data: {}", e),
     }
 
+    println!("Use the Home app on your phone for volume control");
     println!("Press Ctrl-C to stop casting");
     
     // Wait for Ctrl+C
