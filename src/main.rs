@@ -19,13 +19,13 @@ use dialoguer::{theme::ColorfulTheme, Select};
 use local_ip_address::local_ip;
 use anyhow::Result;
 
-const CHROMECAST_IP: &str = "192.168.86.29";
 const HTTP_PORT: u16 = 8080;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
     let debug_mode = args.iter().any(|arg| arg == "--debug" || arg == "-d");
+    let verbose_mode = args.iter().any(|arg| arg == "--verbose" || arg == "-v");
 
     // List all available audio input devices
     let host = cpal::default_host();
@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .collect();
 
     if device_names.is_empty() {
-        println!("No audio input devices found!");
+        println!("No audio input devices found.");
         return Ok(());
     }
 
@@ -59,14 +59,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // println!("Default input config: {:?}", config);
     let num_channels = config.channels() as usize;
 
-    println!("Using audio input device: {}, with {} channel(s)", selected_device.name()?, num_channels);
+    if verbose_mode {
+        println!("Using audio input device: {}, with {} channel(s)", selected_device.name()?, num_channels);
+    }
 
     println!("Discovering Chromecast devices...");
     let cast_devices = discover_devices().await?;
 
     // Print results
     if cast_devices.is_empty() {
-        println!("No Chromecast devices found");
+        println!("No Chromecast devices found.");
         return Ok(());
     }
 
@@ -74,9 +76,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let device_options: Vec<String> = cast_devices
         .iter()
         .map(|device| {
-            format!("{}: {} ({})", 
+            format!("{}: {} {}", 
                 if device.is_group { "Speaker Group" } else { "Device" },
-                device.name, device.ip)
+                device.name,
+                if verbose_mode { format!("({})", device.ip) } else { "".to_string() })
         })
         .collect();
 
@@ -188,25 +191,37 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .await;
     });
     
-    println!("HTTP server running at http://{}:{}", local_ip, HTTP_PORT);
+    if verbose_mode {
+        println!("HTTP server running at http://{}:{}", local_ip, HTTP_PORT);
+        println!("Connecting to Chromecast at {}", selected_cast_device.ip);
+    }
     
     // Connect to the Chromecast device
-    println!("Connecting to Chromecast at {}", CHROMECAST_IP);
     let receiver = Receiver::new();
-    receiver.connect(CHROMECAST_IP).await?;
-    println!("Connected to Chromecast");
+    receiver.connect(&selected_cast_device.ip.to_string()).await?;
+
+    if verbose_mode {
+        println!("Connected");
+    }
     
     let app = receiver.launch_app(AppId::DefaultMediaReceiver).await?;
-    println!("Launched Default Media Receiver app");
+
+    if verbose_mode {
+        println!("Launched default media receiver app");
+    }
     
     let media_controller = MediaController::new(app.clone(), receiver.clone())?;
-    println!("Created media controller");
+
+    if verbose_mode {
+        println!("Created media controller");
+    }
     
     // Start the audio input stream
     input_stream.play()?;
-    println!("Started audio input stream");
-    
-    println!("Streaming audio to Chromecast. Press Ctrl+C to stop.");
+
+    if verbose_mode {
+        println!("Started audio input stream");
+    }
     
     // Start a task to update the audio data
     let audio_task = tokio::spawn(async move {
@@ -232,14 +247,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .unwrap();
     
     // Send to Chromecast
-    println!("Sending media info to Chromecast...");
-    println!("Stream URL: http://{}:{}/audio", local_ip, HTTP_PORT);
+    if verbose_mode {
+        println!("Sending media info to Chromecast...");
+        println!("Stream URL: http://{}:{}/audio", local_ip, HTTP_PORT);
+    }
+    
     match media_controller.load(media_info).await {
-        Ok(_) => println!("Media info sent successfully"),
+        Ok(_) => (),
         Err(e) => eprintln!("Error sending media data: {}", e),
     }
 
-    println!("Hit Ctrl-C to stop casting");
+    println!("Press Ctrl-C to stop casting");
     
     // Wait for Ctrl+C
     tokio::signal::ctrl_c().await?;
