@@ -12,6 +12,8 @@ use warp;
 use async_stream;
 use bytes;
 use local_ip_address;
+use cast_sender::{Receiver, AppId, MediaController};
+use cast_sender::namespace::media::{MediaInformationBuilder, MusicTrackMediaMetadataBuilder, StreamType};
 
 pub fn create_wav_header(sample_rate: u32, channels: u16, bits_per_sample: u16, data_size: u32) -> Vec<u8> {
     let mut header = Vec::new();
@@ -312,4 +314,67 @@ pub fn spawn_audio_http_server(
             .await;
     });
     server_addr
+}
+
+pub async fn connect_and_stream_to_chromecast(
+    selected_cast_device: &ChromecastDevice,
+    local_ip: IpAddr,
+    http_port: u16,
+    verbose_mode: bool,
+) -> Result<(), Box<dyn Error>> {
+    // Connect to the Chromecast device
+    let receiver = Receiver::new();
+    receiver.connect(&selected_cast_device.ip.to_string()).await?;
+
+    if verbose_mode {
+        println!("Connected");
+    }
+    
+    // Choose the correct app ID based on whether it's a group
+    let app_id = if selected_cast_device.is_group {
+        AppId::Custom("2872939A".to_string())
+    } else {
+        AppId::DefaultMediaReceiver
+    };
+    let app = receiver.launch_app(app_id).await?;
+
+    if verbose_mode {
+        println!("Launched {} app", if selected_cast_device.is_group { "Cast Audio Receiver" } else { "Default Media Receiver" });
+    }
+    
+    let media_controller = MediaController::new(app.clone(), receiver.clone())?;
+
+    if verbose_mode {
+        println!("Created media controller");
+    }
+    
+    // Create media data packet
+    let media_info = MediaInformationBuilder::default()
+        .content_id(&format!("http://{}:{}/audio", local_ip, http_port))
+        .stream_type(StreamType::Buffered)
+        .content_type("audio/wav")
+        .metadata(
+            MusicTrackMediaMetadataBuilder::default()
+                .title("Live Audio Stream")
+                .build()
+                .unwrap()
+        )
+        .build()
+        .unwrap();
+    
+    // Send to Chromecast
+    if verbose_mode {
+        println!("Sending media info to Chromecast...");
+        println!("Stream URL: http://{}:{}/audio", local_ip, http_port);
+    }
+    
+    match media_controller.load(media_info).await {
+        Ok(_) => (),
+        Err(e) => eprintln!("Error sending media data: {}", e),
+    }
+
+    println!("Use the Home app on your phone for volume control");
+    println!("Press Ctrl-C to stop casting");
+    
+    Ok(())
 }

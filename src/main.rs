@@ -1,8 +1,4 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cast_sender::namespace::media::{
-    MediaInformationBuilder, MusicTrackMediaMetadataBuilder, StreamType,
-};
-use cast_sender::{AppId, MediaController, Receiver};
 use std::error::Error;
 use tokio::sync::mpsc;
 use std::sync::Arc;
@@ -53,7 +49,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Get a supported configuration for the audio input
     let config = selected_device.default_input_config()?;
-    // println!("Default input config: {:?}", config);
     let num_channels = config.channels() as usize;
 
     if verbose_mode {
@@ -123,32 +118,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("Connecting to Chromecast at {}", selected_cast_device.ip);
     }
     
-    // Connect to the Chromecast device
-    let receiver = Receiver::new();
-    receiver.connect(&selected_cast_device.ip.to_string()).await?;
-
-    if verbose_mode {
-        println!("Connected");
-    }
-    
-    // Choose the correct app ID based on whether it's a group
-    let app_id = if selected_cast_device.is_group {
-        AppId::Custom("2872939A".to_string())
-    } else {
-        AppId::DefaultMediaReceiver
-    };
-    let app = receiver.launch_app(app_id).await?;
-
-    if verbose_mode {
-        println!("Launched {} app", if selected_cast_device.is_group { "Cast Audio Receiver" } else { "Default Media Receiver" });
-    }
-    
-    let media_controller = MediaController::new(app.clone(), receiver.clone())?;
-
-    if verbose_mode {
-        println!("Created media controller");
-    }
-    
     // Start the audio input stream
     input_stream.play()?;
 
@@ -159,39 +128,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Start a task to update the audio data
     let audio_task = tokio::spawn(async move {
         while let Some(data_to_send) = rx.recv().await {
-            // println!("Received audio data: {} bytes", data_to_send.len());
             let mut buffer = audio_buffer.lock().unwrap();
             buffer.extend_from_slice(&data_to_send);
         }
     });
-    
-    // Create media data packet
-    let media_info = MediaInformationBuilder::default()
-        .content_id(&format!("http://{}:{}/audio", local_ip, HTTP_PORT))
-        .stream_type(StreamType::Buffered)
-        .content_type("audio/wav")
-        .metadata(
-            MusicTrackMediaMetadataBuilder::default()
-                .title("Live Audio Stream")
-                .build()
-                .unwrap()
-        )
-        .build()
-        .unwrap();
-    
-    // Send to Chromecast
-    if verbose_mode {
-        println!("Sending media info to Chromecast...");
-        println!("Stream URL: http://{}:{}/audio", local_ip, HTTP_PORT);
-    }
-    
-    match media_controller.load(media_info).await {
-        Ok(_) => (),
-        Err(e) => eprintln!("Error sending media data: {}", e),
-    }
 
-    println!("Use the Home app on your phone for volume control");
-    println!("Press Ctrl-C to stop casting");
+    // Connect and stream to Chromecast
+    auxcast::connect_and_stream_to_chromecast(selected_cast_device, local_ip, HTTP_PORT, verbose_mode).await?;
     
     // Wait for Ctrl+C
     tokio::signal::ctrl_c().await?;
