@@ -4,9 +4,9 @@ This humble tool allows you to take a line input such as the one from your turnt
 
 You'll need an external soundcard that has a line-in on it. You should run this while connected to the same WiFi network as your Chromecast devices.
 
-I'm providing this as source only for now. Raise a bug if you'd like a binary release. It's pure Rust so far, so it should build and run on Mac OS, Windows and Linux.
+I'm providing a binary release only for Mac OS on ARM for now. Raise a bug if you'd like another platform build. It's pure Rust so far, so it should build and run on Mac OS, Windows and Linux.
 
-## Prerequisites
+## Building
 
 1. Install Rust using [rustup](https://rustup.rs/):
    ```bash
@@ -24,8 +24,6 @@ I'm providing this as source only for now. Raise a bug if you'd like a binary re
    cargo --version
    ```
 
-## Building
-
 To build the project:
 ```bash
 cargo build
@@ -33,7 +31,9 @@ cargo build
 
 ## Running
 
-Run it with:
+Grab the latest release binary over here -->
+
+Or, if you've just built locally, run it with:
 ```bash
 cargo run
 ```
