@@ -26,10 +26,21 @@ I'm providing this as source only for now. Raise a bug if you'd like a binary re
 
 ## Building
 
-To build the project:
+To build the project for running on the same machine:
+
 ```bash
 cargo build
 ```
+
+To cross compile from MacOS to Windows:
+
+```bash
+rustup target add x86_64-pc-windows-gnu
+brew install mingw-w64
+cargo build --target x86_64-pc-windows-gnu --release
+```
+
+The resulting binary will be in `target/x86_64-pc-windows-gnu/release/auxcast.exe`
 
 ## Running
 
